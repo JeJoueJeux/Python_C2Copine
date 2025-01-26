@@ -1,12 +1,14 @@
+import base64
 from datetime import datetime
+import json
 import os
 from pathlib import Path
-from api.conversation.secret_keys import AZURE_API_KEY_TEXT, AZURE_API_KEY_TEXT_ENDPOINT, AZURE_API_KEY_TTSHD, AZURE_API_KEY_TTSHD_ENDPOINT, AZURE_API_KEY_WHISPER, AZURE_API_KEY_WHISPER_ENDPOINT
+from api.conversation.secret_keys import AZURE_API_KEY_GPT4O_REALTIME_PREVIEW, AZURE_API_KEY_GPT4O_REALTIME_PREVIEW_ENDPOINT, AZURE_API_KEY_TEXT, AZURE_API_KEY_TEXT_ENDPOINT, AZURE_API_KEY_TTSHD, AZURE_API_KEY_TTSHD_ENDPOINT, AZURE_API_KEY_WHISPER, AZURE_API_KEY_WHISPER_ENDPOINT
 from api.models.response import ResponseModel
 from flask import request  
 from flask import current_app
 from flask import Flask, send_file
-from openai import AzureOpenAI
+from openai import AzureOpenAI 
 
 
 class AzureOpenAIAudioConversations:
@@ -23,19 +25,26 @@ class AzureOpenAIAudioConversations:
         elif t == "stt":
             return self.stt_test()
         elif t == "text": 
-            return self.text_completion_test()
+            return self.text_completion_test() 
         else:
             return ResponseModel("Params error!", {}).failure_json()
-  
 
-    def audio(self):
+
+    def audio(self): 
+        msgs = request.form['messages']  
+        if msgs is None or len(msgs) == 0 or msgs == "[]":
+            msgs = []
+        elif (msgs is not None and len(msgs) > 0):
+            msgs = json.loads(msgs)
+            if msgs[0].get("role") is None or msgs[0].get("content") is None:
+                return ResponseModel("Malformed Message", {}).failure_json()
         if request.files is None or len(request.files) == 0:
             return ResponseModel("No audio found", {}).failure_json()
         f = request.files["file"] 
         user_audio_filepath = self.get_audio_filepath()
         f.save(user_audio_filepath) 
         user_text = self.stt(user_audio_filepath)
-        gpt_responded_text = self.text_completion(user_text)
+        gpt_responded_text = self.text_completion(user_text, msgs)
         gen_audio_filepath = self.get_audio_filepath(True)
         result = self.tts(gpt_responded_text, gen_audio_filepath) 
         if result:
@@ -62,7 +71,9 @@ class AzureOpenAIAudioConversations:
         return ResponseModel("", result).success_json()
     
 
-    def tts(self, text, audio_to_filepath):
+    def tts(self, text, audio_to_filepath) -> bool:
+        if (text is None or len(text) == 0):
+            return False
         try:
             client = AzureOpenAI(
               api_key=AZURE_API_KEY_TTSHD,  
@@ -72,7 +83,7 @@ class AzureOpenAIAudioConversations:
             response = client.audio.speech.create(
                 model="tts-1",
                 voice="nova",
-                input=text
+                input=text,
             )
             response.stream_to_file(audio_to_filepath)
             return True
@@ -87,7 +98,7 @@ class AzureOpenAIAudioConversations:
         return ResponseModel("", result).success_json()
 
 
-    def stt(self, audio_file):
+    def stt(self, audio_file) -> str:
         try:
             client = AzureOpenAI(
               api_key=AZURE_API_KEY_WHISPER,  
@@ -97,7 +108,8 @@ class AzureOpenAIAudioConversations:
             with open(audio_file, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
                     model="whisper-1", 
-                    file=audio_file
+                    file=audio_file,
+                    language="fr-FR"
                 )
                 return transcription.text
         except Exception as e:
@@ -110,27 +122,35 @@ class AzureOpenAIAudioConversations:
         return ResponseModel("", result).success_json()
 
 
-    def text_completion(self, user_text):
+    def text_completion(self, user_text, msgs) -> str: 
+        if (user_text is None or len(user_text) == 0):
+            return ""
         try:
             client = AzureOpenAI(
               api_key=AZURE_API_KEY_TEXT,  
-              api_version="2024-08-01-preview",
+              api_version="2024-11-01-preview",
               azure_endpoint=AZURE_API_KEY_TEXT_ENDPOINT
             )
             messages=[
-                {"role": "system", "content": "Vous êtes un professeur de français natif avec un niveau C2 qui aide les gens à améliorer leur langue française, et vous vous appelez C2Copine. Notez que : Assurez-vous d’utiliser le mot 'te', 'tu' au lieu de 'vous', car il s’agit simplement d’une conversation agréable avec des pairs, et votre réponse ne doit pas être trop longue, rendez-la courte, tout comme discuter avec des amis."},
+                {"role": "system", "content": "Tu es C2Copine, une professeure de français au niveau natif (équivalent au C2 du Cadre européen commun de référence pour les langues). Ton rôle est d’aider les gens à améliorer leur français de manière amicale et naturelle. Adopte une personnalité chaleureuse, vive, amusante et optimiste : tu adores rire et apporter une touche d’humour à tes conversations. Garde les échanges courts et décontractés (une phrase permet généralement, parfois deux phrases), comme si tu discutais avec un ami proche. Réponds toujours exclusivement en français, sans utiliser d'autres langues."},
             ]
+            if msgs is not None and len(msgs) > 0:
+                messages = messages + msgs
             if user_text is not None and len(user_text) > 2:
                 messages.append(
                     {"role": "user", "content": user_text}
                 )
+            # print("messages=", messages)
             response = client.chat.completions.create(
                 model="gpt-4o", 
-                messages=messages
+                messages=messages,
+                max_tokens=64,
+                temperature=0.5,
+                top_p=0.8,
             ) 
             return response.choices[0].message.content
         except Exception as e:
-            print(f"{e}")
+            print(f"text_completion: {e}")
             return ""
         
 
