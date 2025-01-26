@@ -5,6 +5,7 @@ api/__pycache__
 api/models/__pycache__
 api/conversation/__pycache__
 
+audio_gen/
 
 
 
